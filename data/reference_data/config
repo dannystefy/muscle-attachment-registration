@@ -1,0 +1,3 @@
+sacrum C_Sacrum.obj -o R_Gluteus_Maximus_Ori_SAC.vtk
+iliac_r R_Iliac.obj -o R_Gluteus_Maximus_Ori_ILI.vtk -o R_Gluteus_Medius_Ori.vtk -o R_Iliacus_Ori.vtk -o R_Adductor_Brevis_Ori.vtk
+pelvis C_Sacrum.obj R_Iliac.obj L_Iliac.obj -o R_Gluteus_Maximus_Ori.vtk -o R_Gluteus_Medius_Ori.vtk -o R_Iliacus_Ori.vtk -o R_Adductor_Brevis_Ori.vtk

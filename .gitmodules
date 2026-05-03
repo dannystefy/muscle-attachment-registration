@@ -1,0 +1,3 @@
+[submodule "external/FAST_RNRR"]
+	path = external/FAST_RNRR
+	url = https://github.com/Juyong/Fast_RNRR.git
