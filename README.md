@@ -2,7 +2,7 @@
 
 Automatically transfers muscle attachment points from a reference bone to a patient-specific bone using non-rigid surface registration (Fast-RNRR).
 
-Given a reference bone with known muscle attachment regions (stored as VTK point sets) and a patient bone of the same type, the pipeline deforms the patient mesh to match the reference, maps the attachment points via nearest-vertex lookup, then projects them back onto the original patient geometry. Results are saved as VTK files and visualised with Open3D.
+Given a reference bone with known muscle attachment regions (stored as VTK point sets) and a patient bone of the same type, the pipeline deforms the reference mesh to match the patient, transfers the attachment points via deformation field interpolation, and snaps them to the nearest vertices on the patient geometry. A second registration in the opposite direction is used as a round-trip consistency check. Results are saved as VTK files and visualised with Open3D.
 
 ---
 
@@ -104,7 +104,6 @@ python scripts/run.py --femur  --patient path/to/Femur_R.obj
 | Flag | Description |
 |------|-------------|
 | `--no-window` | Skip the interactive viewer, save PNG snapshot only |
-| `--force` | Ignore cached registration results and re-run from scratch |
 
 ---
 
@@ -115,8 +114,8 @@ All outputs are written to `muscle_mapping_<bone>/` next to the patient `.obj` f
 ```
 source_data/002/
 └── muscle_mapping_pelvis/
-    ├── result1_pelvis.obj       # Patient deformed to reference space
-    ├── result2_pelvis.obj       # Result deformed back to patient space
+    ├── result1_pelvis.obj       # Reference deformed to patient space
+    ├── result2_pelvis.obj       # Patient deformed back to reference space (round-trip)
     ├── snapshot_pelvis.png      # Visualisation screenshot
     ├── _tmp1_pelvis/            # Centred meshes for pass 1
     ├── _tmp2_pelvis/            # Centred meshes for pass 2
@@ -133,11 +132,10 @@ VTK files are in the original patient coordinate system and can be loaded direct
 
 ## How it works
 
-1. **Pass 1 — patient → reference:** the patient mesh is non-rigidly registered to the reference bone using Fast-RNRR. Both meshes are centred before registration and the result is shifted back into the reference coordinate system.
-2. **Attachment mapping:** for each VTK attachment point on the reference, the nearest vertex on the registered mesh is found via KD-tree lookup.
-3. **Pass 2 — result → patient:** the registered mesh is mapped back onto the original patient bone, carrying the attachment vertex indices with it.
-4. **Export:** final attachment positions are written as VTK POLYDATA files and displayed in an Open3D window.
-
+1. **Pass 1 — reference → patient:** the reference mesh is non-rigidly registered to the patient bone using Fast-RNRR. Both meshes are centred before registration and the result is shifted back into the patient coordinate system.
+2. **Attachment transfer:** the original reference attachment points are propagated into the patient coordinate space via inverse-distance weighted interpolation of the per-vertex displacement field obtained from Pass 1.
+3. **Pass 2 — patient → reference (round-trip):** the patient mesh is registered back to the reference. The transferred attachment points are propagated through this inverse deformation, producing a round-trip estimate of the original positions. The deviation between original and round-trip points serves as a consistency metric.
+4. **Snap and export:** transferred points are snapped to the nearest patient mesh vertices using KD-tree lookup, written as VTK POLYDATA files, and displayed in an Open3D window.
 ---
 
 ## Citation
