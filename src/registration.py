@@ -2,6 +2,7 @@ import subprocess
 import numpy as np
 from pathlib import Path
 import platform
+from scipy.spatial import KDTree
 
 if platform.system() == "Windows":
     RNRR_BINARY = Path(__file__).parent.parent / "win/Fast_RNRR.exe"
@@ -56,15 +57,15 @@ def register_meshes(source: Path, target: Path, output: Path, landmarks: Path = 
     Centre both meshes, run Fast_RNRR, then shift the result back into the
     target coordinate system.
 
-    source  – patient bone (deformed to match target)
-    target  – reference bone carrying the attachment points
+    source  – mesh to be deformed
+    target  – mesh defining the target shape
     output  – deformed source in the target's original coordinate system
 
     Returns
     -------
     output       : Path   – result OBJ in the target's original space
-    src_centroid : ndarray – centroid of the source (patient) mesh
-    tgt_centroid : ndarray – centroid of the target (reference) mesh
+    src_centroid : ndarray – centroid of the source mesh
+    tgt_centroid : ndarray – centroid of the target mesh
     """
     if not RNRR_BINARY.exists():
         raise RuntimeError(
@@ -104,3 +105,18 @@ def register_meshes(source: Path, target: Path, output: Path, landmarks: Path = 
     save_obj(output, verts + tgt_centroid, faces, other)
 
     return output, src_centroid, tgt_centroid
+
+
+def interpolate_deformation(source_verts: np.ndarray, deformed_verts: np.ndarray, query_points: np.ndarray, k: int = 4) -> np.ndarray:
+    """
+    Applies the deformation field (source_verts → deformed_verts) to query_points
+    using inverse-distance weighted interpolation of per-vertex displacements.
+    """
+    n = len(source_verts)
+    displacement = deformed_verts[:n] - source_verts  
+    tree = KDTree(source_verts)
+    dists, idx = tree.query(query_points, k=k)
+    weights = 1.0 / (dists + 1e-10)
+    weights /= weights.sum(axis=1, keepdims=True)
+    weighted_disp = np.einsum('mk,mkd->md', weights, displacement[idx])
+    return query_points + weighted_disp

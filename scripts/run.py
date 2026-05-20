@@ -10,7 +10,7 @@ from scipy.spatial.distance import directed_hausdorff
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.registration import register_meshes
+from src.registration import register_meshes, interpolate_deformation, load_obj
 from src.muscle_transfer import load_vtk_points, find_nearest_vertices, save_vtk_points
 from src.visualization import visualize_all_attachments
 from src.visualization import save_snapshot
@@ -73,38 +73,12 @@ def load_mesh(path: Path, label: str) -> o3d.geometry.TriangleMesh:
     return mesh
 
 
-def centroid_from_original(original_path: Path) -> np.ndarray:
-    verts = []
-    with open(original_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("v "):
-                parts = line.split()
-                verts.append([float(parts[1]), float(parts[2]), float(parts[3])])
-    return np.array(verts).mean(axis=0)
-
-
-def cache_valid(result_path: Path, tmp_dir: Path) -> bool:
-    """Returns True if the registration result exists and tmp_dir contains the centered OBJ files."""
-    return (
-        result_path.exists()
-        and (tmp_dir / "target_centered.obj").exists()
-        and (tmp_dir / "source_centered.obj").exists()
-    )
-
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 # --demo is just a shortcut that calls run() with the default SRC_DIR patient path.
 # No separate function needed.
 
-def run(bone: str, patient_path: Path, no_window: bool = False, force: bool = False, demo: bool = False) -> None:
-    """
-    Full two-pass registration pipeline.
-    Transfers attachments from the reference bone onto the patient bone.
-    All outputs (result1/2, tmp folders, snapshot) are saved to
-    {patient_path.parent}/muscle_mapping/.
-
-    demo=True just prints [DEMO] in the header; no other behavioural difference.
-    """
+def run(bone: str, patient_path: Path, no_window: bool = False, demo: bool = False) -> None:
     cfg   = CONFIGS[bone]
     label = cfg["label"]
 
@@ -113,7 +87,6 @@ def run(bone: str, patient_path: Path, no_window: bool = False, force: bool = Fa
     print(f"  {label}{demo_tag}  [patient: {patient_path}]")
     print(f"{'═'*60}")
 
-    # Output folder next to the patient source file
     out_dir = patient_path.parent / f"muscle_mapping_{bone}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -132,89 +105,90 @@ def run(bone: str, patient_path: Path, no_window: bool = False, force: bool = Fa
     ref_centroid = np.asarray(ref_mesh.vertices).mean(axis=0)
     pat_centroid = np.asarray(patient_mesh.vertices).mean(axis=0)
 
-    # ── Pass 1: patient → reference ──────────────────────────────────────
-    if not force and cache_valid(result1_path, tmp1_dir):
-        print(f"[1/2] Registration: using cache  ({result1_path.name})")
-        tgt_centroid1 = centroid_from_original(cfg["ref_mesh"])
-    else:
-        msg = "(--force, overwriting cache)" if force else ""
-        print(f"[1/2] Registration: patient → reference {msg}...")
-        result1_path, _, tgt_centroid1 = register_meshes(
-            source=patient_path,
-            target=cfg["ref_mesh"],
-            output=result1_path,
-            tmp_dir=tmp1_dir,
-        )
+    patient_mesh_c, _ = centered_mesh(patient_mesh, pat_centroid)
 
-    result1_mesh = load_mesh(result1_path, "Result1")
-    result1_mesh_c, res1_verts_c = centered_mesh(result1_mesh, tgt_centroid1)
+    ref_verts_raw, _, _     = load_obj(cfg["ref_mesh"])
+    patient_verts_raw, _, _ = load_obj(patient_path)
 
-    # ── Pass 2: result1 → patient ─────────────────────────────────────────
-    if not force and cache_valid(result2_path, tmp2_dir):
-        print(f"[2/2] Registration: using cache  ({result2_path.name})")
-        tgt_centroid2 = centroid_from_original(str(patient_path))
-    else:
-        msg = "(--force, overwriting cache)" if force else ""
-        print(f"[2/2] Registration: result1 → patient {msg}...")
-        result2_path, _, tgt_centroid2 = register_meshes(
-            source=result1_path,
-            target=patient_path,
-            output=result2_path,
-            tmp_dir=tmp2_dir,
-        )
-
-    result2_mesh = load_mesh(result2_path, "Result2")
-    result2_mesh_c, res2_verts_c = centered_mesh(result2_mesh, tgt_centroid2)
-    patient_mesh_c, pat_verts_c  = centered_mesh(patient_mesh, pat_centroid)
-
-    # ── Attachment transfer ───────────────────────────────────────────────────
-    results = {}
-
+    # ── Sbírání VTK bodů ──────────────────────────────────────────────────────
+    vtk_info = {}
+    all_vtk  = []
     for vtk_path in cfg["vtk_files"]:
         name = vtk_path.stem
-        print(f"\n── {name}")
-
         if not vtk_path.exists():
             print(f"  ERROR: file not found: {vtk_path}")
             continue
-
-        vtk_points = load_vtk_points(str(vtk_path))
-        if vtk_points is None or len(vtk_points) == 0:
+        pts = load_vtk_points(str(vtk_path))
+        if pts is None or len(pts) == 0:
             print(f"  ERROR: no points in VTK file: {vtk_path}")
             continue
+        s = len(all_vtk)
+        all_vtk.extend(pts.tolist())
+        vtk_info[name] = (s, s + len(pts))
+    all_vtk = np.array(all_vtk)
 
-        vtk_points_c = vtk_points - ref_centroid
+    # ── Pass 1: reference → patient ───────────────────────────────────────────
+    print("[1/2] Registration: reference → patient ...")
+    result1_path, _, _ = register_meshes(
+        source=cfg["ref_mesh"],
+        target=patient_path,
+        output=result1_path,
+        tmp_dir=tmp1_dir,
+    )
+    result1_verts_raw, _, _ = load_obj(result1_path)
+    transferred_vtk = interpolate_deformation(ref_verts_raw, result1_verts_raw, all_vtk)
 
-        result1_tendon_ids = find_nearest_vertices(result1_mesh_c, vtk_points_c)
-        result1_tendon_pos = res1_verts_c[result1_tendon_ids]
+    # ── Pass 2: patient → reference (round-trip metrika) ──────────────────────
+    print("[2/2] Registration: patient → reference (round-trip) ...")
+    result2_path, _, _ = register_meshes(
+        source=patient_path,
+        target=cfg["ref_mesh"],
+        output=result2_path,
+        tmp_dir=tmp2_dir,
+    )
+    result2_verts_raw, _, _ = load_obj(result2_path)
+    roundtrip_vtk = interpolate_deformation(patient_verts_raw, result2_verts_raw, transferred_vtk)
 
-        hd = max(
-            directed_hausdorff(result1_tendon_pos, vtk_points_c)[0],
-            directed_hausdorff(vtk_points_c, result1_tendon_pos)[0],
-        )
-        n    = min(len(result1_tendon_pos), len(vtk_points_c))
-        mse  = np.mean(np.linalg.norm(result1_tendon_pos[:n] - vtk_points_c[:n], axis=1) ** 2)
+    # ── Přenos úponů + round-trip metriky ─────────────────────────────────────
+    results = {}
+    for vtk_path in cfg["vtk_files"]:
+        name = vtk_path.stem
+        if name not in vtk_info:
+            continue
+        s, e = vtk_info[name]
+
+        orig_vtk        = all_vtk[s:e]
+        trans_vtk_c     = transferred_vtk[s:e] - pat_centroid
+        roundtrip_pos   = roundtrip_vtk[s:e]
+        roundtrip_pos_c = roundtrip_pos - ref_centroid
+
+        n    = min(len(orig_vtk), len(roundtrip_pos))
+        hd   = max(directed_hausdorff(roundtrip_pos[:n], orig_vtk[:n])[0],
+                   directed_hausdorff(orig_vtk[:n], roundtrip_pos[:n])[0])
+        mse  = np.mean(np.linalg.norm(roundtrip_pos[:n] - orig_vtk[:n], axis=1) ** 2)
         rmse = np.sqrt(mse)
 
-        print(f"  Points:                  {len(vtk_points)}")
-        print(f"  Hausdorff after reg.:    {hd:.4f} mm")
-        print(f"  MSE after reg.:          {mse:.4f} mm²")
-        print(f"  RMSE after reg.:         {rmse:.4f} mm")
+        ref_scale = np.linalg.norm(ref_verts_raw.max(axis=0) - ref_verts_raw.min(axis=0))
+        hd_norm   = hd   / ref_scale * 100
+        rmse_norm = rmse / ref_scale * 100
 
-        result1_tendon_ids = np.asarray(result1_tendon_ids)
-        tendon_pos_c       = res2_verts_c[result1_tendon_ids]
-        patient_tendon_ids = np.asarray(find_nearest_vertices(patient_mesh_c, tendon_pos_c))
+        print(f"\n── {name}")
+        print(f"  Points:                  {n}")
+        print(f"  Hausdorff (round-trip):  {hd:.4f} mm  ({hd_norm:.2f} %)")
+        print(f"  MSE (round-trip):        {mse:.4f} mm²")
+        print(f"  RMSE (round-trip):       {rmse:.4f} mm  ({rmse_norm:.2f} %)")
+
+        patient_tendon_ids = np.asarray(find_nearest_vertices(patient_mesh_c, trans_vtk_c))
 
         results[name] = {
             "patient_tendon_ids": patient_tendon_ids,
-            "result1_tendon_ids": result1_tendon_ids,
-            "vtk_points_c":       vtk_points_c,
-            "hausdorff":          hd,
-            "mse":                mse,
-            "rmse":               rmse,
+            "transferred_vtk_c":  trans_vtk_c,
+            "vtk_points_c":       orig_vtk - ref_centroid,
+            "roundtrip_vtk_c":    roundtrip_pos_c,
+            "hausdorff": hd, "mse": mse, "rmse": rmse,
         }
 
-    # ── Souhrn ───────────────────────────────────────────────────────────────
+    # ── Souhrn ────────────────────────────────────────────────────────────────
     print(f"\n{'═'*60}")
     print(f"  SUMMARY – {label}")
     print(f"{'─'*60}")
@@ -224,26 +198,20 @@ def run(bone: str, patient_path: Path, no_window: bool = False, force: bool = Fa
         print(f"{name:<38} {r['hausdorff']:>10.4f} mm {r['rmse']:>8.4f} mm")
     print(f"{'═'*60}\n")
 
-    # ── Visualisation ─────────────────────────────────────────────────────────
-    verts = np.asarray(patient_mesh_c.vertices)
-    muscles = {
-        name: verts[r["patient_tendon_ids"]]
-        for name, r in results.items()
-    }
-
-    # ── Save transferred VTK files ────────────────────────────────────────────
-    # Points are stored back in the original (non-centred) patient coordinate
-    # system so they align with the patient OBJ file in downstream tools.
+    # ── Uložení VTK ───────────────────────────────────────────────────────────
     vtk_out_dir = out_dir / "vtk"
     vtk_out_dir.mkdir(parents=True, exist_ok=True)
-    for name, pts_c in muscles.items():
-        pts_world = pts_c + pat_centroid          # undo centring
+    muscles = {}
+    verts   = np.asarray(patient_mesh_c.vertices)
+    for name, r in results.items():
+        muscles[name] = verts[r["patient_tendon_ids"]]
+        pts_world = r["transferred_vtk_c"] + pat_centroid
         vtk_path  = vtk_out_dir / f"{name}_transferred.vtk"
         save_vtk_points(vtk_path, pts_world)
         print(f"  VTK saved: {vtk_path.relative_to(out_dir.parent)}")
 
+    # ── Vizualizace ───────────────────────────────────────────────────────────
     snapshot_path = out_dir / f"snapshot_{bone}.png"
-
     if no_window:
         save_snapshot(
             patient_mesh=patient_mesh_c,
@@ -262,7 +230,6 @@ def run(bone: str, patient_path: Path, no_window: bool = False, force: bool = Fa
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Muscle attachment transfer to a patient bone.",
@@ -274,14 +241,12 @@ def main() -> None:
             "    python run.py --demo --pelvis\n"
             "    python run.py --demo --femur\n"
             "    python run.py --demo --pelvis --no-window\n"
-            "    python run.py --demo --pelvis --force\n"
             "\n"
             "  User – full pipeline with a custom patient bone:\n"
             "    python run.py --pelvis                                     # default path from CONFIGS\n"
             "    python run.py --pelvis --patient path/to/Pelvis.obj\n"
             "    python run.py --femur  --patient path/to/Femur_R.obj\n"
             "    python run.py --pelvis --patient path/to/Pelvis.obj --no-window\n"
-            "    python run.py --pelvis --patient path/to/Pelvis.obj --force\n"
             "\n"
             "  All outputs (result1/2, tmp folders, snapshot) are saved to\n"
             "  muscle_mapping/ next to the patient OBJ file.\n"
@@ -325,11 +290,6 @@ def main() -> None:
         action="store_true",
         help="Skip the interactive window and only save a PNG snapshot.",
     )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Ignore cache and re-run registration (overwrites result1/result2).",
-    )
 
     args = parser.parse_args()
 
@@ -340,7 +300,7 @@ def main() -> None:
             parser.error("--patient cannot be combined with --demo.")
         patient_path = CONFIGS[bone]["patient_mesh"]
         print(f"  [DEMO] Using built-in patient path: {patient_path}")
-        run(bone, patient_path=patient_path, no_window=args.no_window, force=args.force, demo=True)
+        run(bone, patient_path=patient_path, no_window=args.no_window, demo=True)
     else:
         if args.patient is not None:
             patient_path = Path(args.patient)
@@ -348,7 +308,7 @@ def main() -> None:
             patient_path = CONFIGS[bone]["patient_mesh"]
             print(f"  (Using default patient path from CONFIGS: {patient_path})")
 
-        run(bone, patient_path=patient_path, no_window=args.no_window, force=args.force)
+        run(bone, patient_path=patient_path, no_window=args.no_window)
 
 
 if __name__ == "__main__":

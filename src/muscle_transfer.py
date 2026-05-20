@@ -85,15 +85,3 @@ def find_nearest_vertices(mesh: o3d.geometry.TriangleMesh, query_points: np.ndar
         vertex_ids.append(idx[0])
     return vertex_ids
 
-
-def project_points_to_mesh(mesh: o3d.geometry.TriangleMesh, points: np.ndarray) -> np.ndarray:
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
-    tree = o3d.geometry.KDTreeFlann(pcd)
-
-    verts = np.asarray(mesh.vertices)
-    projected = []
-    for pt in points:
-        _, idx, _ = tree.search_knn_vector_3d(pt, 1)
-        projected.append(verts[idx[0]])
-    return np.array(projected)
