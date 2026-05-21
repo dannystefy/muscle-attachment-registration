@@ -149,7 +149,7 @@ def run(bone: str, patient_path: Path, no_window: bool = False, demo: bool = Fal
     result2_verts_raw, _, _ = load_obj(result2_path)
     roundtrip_vtk = interpolate_deformation(patient_verts_raw, result2_verts_raw, transferred_vtk)
 
-    # ── Přenos úponů + round-trip metriky ─────────────────────────────────────
+    # ── Muscle transfer + round-trip  ─────────────────────────────────────
     results = {}
     for vtk_path in cfg["vtk_files"]:
         name = vtk_path.stem
@@ -188,7 +188,7 @@ def run(bone: str, patient_path: Path, no_window: bool = False, demo: bool = Fal
             "hausdorff": hd, "mse": mse, "rmse": rmse,
         }
 
-    # ── Souhrn ────────────────────────────────────────────────────────────────
+    # ── Summary ────────────────────────────────────────────────────────────────
     print(f"\n{'═'*60}")
     print(f"  SUMMARY – {label}")
     print(f"{'─'*60}")
@@ -198,7 +198,7 @@ def run(bone: str, patient_path: Path, no_window: bool = False, demo: bool = Fal
         print(f"{name:<38} {r['hausdorff']:>10.4f} mm {r['rmse']:>8.4f} mm")
     print(f"{'═'*60}\n")
 
-    # ── Uložení VTK ───────────────────────────────────────────────────────────
+    # ── Save VTK ───────────────────────────────────────────────────────────
     vtk_out_dir = out_dir / "vtk"
     vtk_out_dir.mkdir(parents=True, exist_ok=True)
     muscles = {}
@@ -210,7 +210,7 @@ def run(bone: str, patient_path: Path, no_window: bool = False, demo: bool = Fal
         save_vtk_points(vtk_path, pts_world)
         print(f"  VTK saved: {vtk_path.relative_to(out_dir.parent)}")
 
-    # ── Vizualizace ───────────────────────────────────────────────────────────
+    # ── Visual ───────────────────────────────────────────────────────────
     snapshot_path = out_dir / f"snapshot_{bone}.png"
     if no_window:
         save_snapshot(
